@@ -12,6 +12,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// ─── APP PWA (Airway Logistics) ───────────────────────────────────────────────
+app.use(express.static("public"));
+
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const WA_TOKEN        = process.env.WA_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -24,6 +27,20 @@ const PORT = process.env.PORT || 8080;
 const AT_BASE    = "appwqo95MZSiJ15BB";
 const AT_CLIENTES = "tblCghaRGBumZUtOt";
 const AT_CONVOS   = "tblnfHkk9lvxyOXI6";
+const AT_COTIZACIONES = "tblgWhnlB3XSij0fo";
+
+const FIELDS_COTIZACIONES = {
+  idCotizacion:     "fldwG2AOGKEBP3yD1",
+  tipoFlete:        "fldKEncqqggrpU9qL",
+  origen:           "fldxJadIvPFTjUj6d",
+  peso:             "fld6gXEGKtJ8DAn7Z",
+  volumen:          "fldrGMAMOFQcGWXiY",
+  total:            "fld0nwlGTJLgE6Sae",
+  estado:           "fldblRpPYJtloGcrW",
+  descripcion:      "fldLrNOldBOo3eTuc",
+  fecha:            "fldeutXNxeUBvs6Qk",
+  generadaPor:      "fldC6zWKEdPkuL0UV",
+};
 
 const FIELDS_CLIENTES = {
   nombre:         "fldx5kjfU24oilb1F",
@@ -49,7 +66,7 @@ const FIELDS_CONVOS = {
 };
 
 // ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Eres el asistente virtual oficial de Airway Logistics (airwaycr.co), empresa de freight forwarding con sede en Costa Rica.
+const SYSTEM_PROMPT = `Eres el asistente virtual oficial de Airway Logistics (airwaycr.com), empresa de freight forwarding con sede en Costa Rica.
 
 ## EMPRESA
 - Almacén en Doral, Florida, USA
@@ -57,28 +74,76 @@ const SYSTEM_PROMPT = `Eres el asistente virtual oficial de Airway Logistics (ai
 - Email: airwaycr@gmail.com
 - Servicios: Flete aéreo y marítimo (también desde China)
 
-## TARIFAS
-- Aéreo: por libra (pedí peso estimado para cotizar)
-- Marítimo: por pie cúbico (pedí medidas para cotizar)
+## TARIFAS (úsalas para cotizar automáticamente, nunca inventes precios)
 
-## PROCESO
+### Flete Aéreo
+- Desde USA (Miami): $7 por libra
+- Desde China: $18 por libra
+
+### Flete Marítimo
+- Desde USA (Miami): $30 por pie cúbico
+- Desde China: $40 por pie cúbico
+
+## REGLAS DE CÁLCULO (MUY IMPORTANTE)
+- El cobro mínimo es 1 libra (aéreo) o 1 pie cúbico (marítimo)
+- SIEMPRE redondea hacia arriba al número entero siguiente antes de calcular:
+  - Ejemplo: 2.5 libras → se cobra como 3 libras
+  - Ejemplo: 0.3 libras → se cobra como 1 libra
+  - Ejemplo: 2.5 pies cúbicos → se cobra como 3 pies cúbicos
+- NUNCA le menciones al cliente que redondeaste o que existe una política de redondeo — simplemente da el precio final ya calculado
+- Fórmula: precio = libras_redondeadas × tarifa_por_libra (o pies_cúbicos_redondeados × tarifa_por_pie_cúbico)
+
+## CÓMO COTIZAR
+Cuando el cliente pida una cotización, seguí este orden:
+1. Preguntá: ¿aéreo o marítimo?
+2. Preguntá: ¿desde USA o desde China?
+3. Preguntá: peso en libras (aéreo) o medidas largo x ancho x alto en pulgadas o pies (marítimo, para calcular pies cúbicos)
+4. Con esos datos, calculá el precio exacto usando las tarifas de arriba y las reglas de redondeo
+5. Da el precio final de forma clara y directa, por ejemplo: "El envío de tu paquete de 3 libras por aéreo desde Miami cuesta $21.00 🚀"
+
+Si el cliente no da las medidas exactas para marítimo, ayudale a calcular el pie cúbico: pie³ = (largo × ancho × alto en pulgadas) ÷ 1728
+
+## PROCESO GENERAL
 1. Cliente compra en USA → envía a nuestro almacén en Doral, FL
 2. Nosotros consolidamos y enviamos a Costa Rica (aduanas incluidas)
 
-## REGLAS
+## REGLAS GENERALES
 - Respondé siempre en el idioma del cliente
 - Respuestas cortas y claras
-- Para cotizar: pedí tipo de servicio, peso/medidas, descripción del producto
 - Para tracking: pedí número de rastreo
-- Si no podés resolver: "Un asesor te contactará pronto"
-- Nunca inventes precios sin datos del envío
+- Si no podés resolver algo fuera de cotizaciones: "Un asesor te contactará pronto"
 - Firmá como: "Equipo Airway Logistics 🚀"
 
-## DETECCIÓN DE TEMA
-Al final de cada respuesta, en una línea oculta con formato JSON escribe exactamente:
-{"tema":"TEMA"} donde TEMA es uno de: Cotización, Tracking, Información general, Registro, Reclamo, Otro`;
+## DETECCIÓN DE TEMA Y COTIZACIÓN
+Al final de cada respuesta, agregá SIEMPRE una línea oculta con formato JSON exacto:
+{"tema":"TEMA"} donde TEMA es uno de: Cotización, Tracking, Información general, Registro, Reclamo, Otro
 
-// ─── SESIONES EN MEMORIA ──────────────────────────────────────────────────────
+Si en tu respuesta acabas de dar un precio final de cotización, agregá ADEMÁS otra línea oculta exacta:
+{"cotizacion":{"tipo":"aereo o maritimo","origen":"usa o china","cantidad":NUMERO_REDONDEADO,"total":PRECIO_FINAL}}`;
+
+// ─── TARIFAS Y CÁLCULO COMPARTIDO (bot + app) ────────────────────────────────
+const TARIFAS = {
+  aereo:     { usa: 7,  china: 18 },
+  maritimo:  { usa: 30, china: 40 },
+};
+
+function calcularCotizacion(tipo, origen, cantidad) {
+  const redondeado = Math.ceil(cantidad);
+  const tarifa = TARIFAS[tipo]?.[origen];
+  if (!tarifa) return null;
+  const total = redondeado * tarifa;
+  return { tipo, origen, cantidad: redondeado, tarifaUnitaria: tarifa, total };
+}
+
+// ─── SESIONES DE CHAT DE LA APP (separadas de WhatsApp) ──────────────────────
+const appSessions = new Map();
+
+function getAppHistory(sessionId) {
+  if (!appSessions.has(sessionId)) appSessions.set(sessionId, []);
+  return appSessions.get(sessionId);
+}
+
+
 const sessions = new Map();
 
 function getHistory(phone) {
@@ -181,6 +246,43 @@ async function logConversacion(phone, msgCliente, respuestaBot, tema) {
   }
 }
 
+// ─── DETECCIÓN Y REGISTRO DE COTIZACIONES ────────────────────────────────────
+function extraerCotizacion(texto) {
+  try {
+    const match = texto.match(/\{"cotizacion":(\{[^}]+\})\}/);
+    return match ? JSON.parse(match[1]) : null;
+  } catch { return null; }
+}
+
+async function logCotizacion(phone, cot) {
+  try {
+    const idCot = `COT-${Date.now()}`;
+    await axios.post(
+      `https://api.airtable.com/v0/${AT_BASE}/${AT_COTIZACIONES}`,
+      {
+        records: [{
+          fields: {
+            [FIELDS_COTIZACIONES.idCotizacion]: idCot,
+            [FIELDS_COTIZACIONES.tipoFlete]:    cot.tipo === "aereo" ? "Aéreo" : "Marítimo",
+            [FIELDS_COTIZACIONES.origen]:       cot.origen === "china" ? "China" : "USA",
+            [FIELDS_COTIZACIONES.peso]:         cot.tipo === "aereo" ? cot.cantidad : null,
+            [FIELDS_COTIZACIONES.volumen]:      cot.tipo === "maritimo" ? cot.cantidad : null,
+            [FIELDS_COTIZACIONES.total]:        cot.total,
+            [FIELDS_COTIZACIONES.estado]:       "Enviada",
+            [FIELDS_COTIZACIONES.descripcion]:  `Cotización automática para ${phone}`,
+            [FIELDS_COTIZACIONES.fecha]:        new Date().toISOString(),
+            [FIELDS_COTIZACIONES.generadaPor]:  "Bot WhatsApp",
+          }
+        }]
+      },
+      { headers: atHeaders() }
+    );
+    console.log(`💰 AT: cotización registrada ${idCot} - $${cot.total}`);
+  } catch (e) {
+    console.error("AT logCotizacion:", e.message);
+  }
+}
+
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
 function extraerTema(texto) {
   try {
@@ -190,7 +292,10 @@ function extraerTema(texto) {
 }
 
 function limpiarRespuesta(texto) {
-  return texto.replace(/\{"tema":"[^"]+"\}/g, "").trim();
+  return texto
+    .replace(/\{"tema":"[^"]+"\}/g, "")
+    .replace(/\{"cotizacion":\{[^}]+\}\}/g, "")
+    .trim();
 }
 
 async function askClaude(phone, userMessage) {
@@ -213,9 +318,10 @@ async function askClaude(phone, userMessage) {
   );
   const raw = res.data.content.map((b) => b.text || "").join("");
   const tema = extraerTema(raw);
+  const cotizacion = extraerCotizacion(raw);
   const reply = limpiarRespuesta(raw);
   addToHistory(phone, "assistant", reply);
-  return { reply, tema };
+  return { reply, tema, cotizacion };
 }
 
 // ─── WHATSAPP ─────────────────────────────────────────────────────────────────
@@ -268,6 +374,67 @@ app.post("/register-web-lead", async (req, res) => {
   }
 });
 
+// ─── API DE LA APP ────────────────────────────────────────────────────────────
+
+// Cotizador
+app.post("/api/quote", (req, res) => {
+  const { tipo, origen, cantidad } = req.body;
+  if (!tipo || !origen || !cantidad) {
+    return res.status(400).json({ error: "Faltan datos: tipo, origen, cantidad" });
+  }
+  const resultado = calcularCotizacion(tipo, origen, parseFloat(cantidad));
+  if (!resultado) return res.status(400).json({ error: "Tipo u origen inválido" });
+  res.json(resultado);
+});
+
+// Rastreo (pendiente integración con Fuzion Cargo — respuesta honesta por ahora)
+app.get("/api/track/:trackingNumber", (req, res) => {
+  res.json({
+    status: "En revisión",
+    message: `Recibimos tu consulta para el número ${req.params.trackingNumber}. El rastreo en tiempo real todavía está en integración — un asesor te va a confirmar el estado por WhatsApp pronto.`,
+  });
+});
+
+// Chat con Claude (para la app, sesión separada de WhatsApp)
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { message, sessionId } = req.body;
+    if (!message || !sessionId) {
+      return res.status(400).json({ error: "Faltan datos: message, sessionId" });
+    }
+
+    const history = getAppHistory(sessionId);
+    history.push({ role: "user", content: message });
+    if (history.length > 20) history.splice(0, 2);
+
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: history,
+      },
+      {
+        headers: {
+          "x-api-key": ANTHROPIC_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+      }
+    );
+
+    const raw = response.data.content.map((b) => b.text || "").join("");
+    const reply = limpiarRespuesta(raw);
+    history.push({ role: "assistant", content: reply });
+
+    res.json({ reply });
+  } catch (err) {
+    console.error("❌ Error /api/chat:", err.response?.data || err.message);
+    res.status(500).json({ error: "Error al procesar el mensaje" });
+  }
+});
+
 // ─── WEBHOOK VERIFICATION ─────────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
   const { "hub.mode": mode, "hub.verify_token": token, "hub.challenge": challenge } = req.query;
@@ -309,7 +476,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // 2. Llamar a Claude
-    const { reply, tema } = await askClaude(phone, texto);
+    const { reply, tema, cotizacion } = await askClaude(phone, texto);
     console.log(`🤖 Claude [${tema}]: ${reply.substring(0, 60)}...`);
 
     // 3. Enviar respuesta por WhatsApp
@@ -317,6 +484,11 @@ app.post("/webhook", async (req, res) => {
 
     // 4. Loguear conversación en Airtable
     await logConversacion(phone, texto, reply, tema);
+
+    // 5. Si se generó una cotización, guardarla también
+    if (cotizacion) {
+      await logCotizacion(phone, cotizacion);
+    }
 
   } catch (err) {
     console.error("❌ Error:", err.response?.data || err.message);
