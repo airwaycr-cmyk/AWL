@@ -1,0 +1,15 @@
+{
+  "name": "Airway Logistics",
+  "short_name": "Airway",
+  "description": "Cotiza, rastrea y hablá con tu asistente de envíos USA/China → Costa Rica",
+  "start_url": "/app",
+  "scope": "/app",
+  "display": "standalone",
+  "background_color": "#081D3A",
+  "theme_color": "#081D3A",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
